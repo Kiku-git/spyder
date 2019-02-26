@@ -6,8 +6,8 @@
 
 """Miscellaneous utilities"""
 
-import codecs
 import functools
+import logging
 import os
 import os.path as osp
 import re
@@ -15,7 +15,10 @@ import sys
 import stat
 
 from spyder.py3compat import is_text_string, getcwd
-from spyder.config.base import get_home_dir, debug_print
+from spyder.config.base import get_home_dir
+
+
+logger = logging.getLogger(__name__)
 
 
 def __remove_pyc_pyo(fname):
@@ -97,7 +100,8 @@ def count_lines(path, extensions=None, excluded_dirnames=None):
     if extensions is None:
         extensions = ['.py', '.pyw', '.ipy', '.enaml', '.c', '.h', '.cpp',
                       '.hpp', '.inc', '.', '.hh', '.hxx', '.cc', '.cxx',
-                      '.cl', '.f', '.for', '.f77', '.f90', '.f95', '.f2k']
+                      '.cl', '.f', '.for', '.f77', '.f90', '.f95', '.f2k',
+                      '.f03', '.f08']
     if excluded_dirnames is None:
         excluded_dirnames = ['build', 'dist', '.hg', '.svn']
     def get_filelines(path):
@@ -223,7 +227,7 @@ def add_pathlist_to_PYTHONPATH(env, pathlist, drop_env=False,
     # PyQt API 1/2 compatibility-related tests:
     assert isinstance(env, list)
     assert all([is_text_string(path) for path in env])
-    
+
     pypath = "PYTHONPATH"
     pathstr = os.pathsep.join(pathlist)
     if os.environ.get(pypath) is not None and not drop_env:
@@ -277,8 +281,8 @@ def getcwd_or_home():
     try:
         return getcwd()
     except OSError:
-        debug_print("WARNING: Current working directory was deleted, "
-                    "falling back to home dirertory")
+        logger.debug("WARNING: Current working directory was deleted, "
+                     "falling back to home dirertory")
         return get_home_dir()
 
 

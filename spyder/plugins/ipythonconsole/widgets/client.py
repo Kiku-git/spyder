@@ -33,7 +33,7 @@ from qtpy.QtWidgets import (QHBoxLayout, QLabel, QMenu, QMessageBox,
 # Local imports
 from spyder.config.base import (_, get_image_path, get_module_source_path,
                                 running_under_pytest)
-from spyder.config.gui import get_font, get_shortcut
+from spyder.config.gui import get_shortcut, is_dark_interface
 from spyder.utils import icon_manager as ima
 from spyder.utils import sourcecode
 from spyder.utils.encoding import get_coding
@@ -43,7 +43,6 @@ from spyder.utils.qthelpers import (add_actions, create_action,
                                     create_toolbutton, DialogManager,
                                     MENU_SEPARATOR)
 from spyder.py3compat import to_text_string
-from spyder.widgets.browser import WebView
 from spyder.plugins.ipythonconsole.widgets import ShellWidget
 from spyder.widgets.mixins import SaveHistoryMixin
 from spyder.plugins.variableexplorer.widgets.collectionseditor import (
@@ -91,8 +90,8 @@ class ClientWidget(QWidget, SaveHistoryMixin):
     """
     Client widget for the IPython Console
 
-    This is a widget composed of a shell widget and a WebView info widget
-    to print different messages there.
+    This widget is necessary to handle the interaction between the
+    plugin and each shell widget.
     """
 
     SEPARATOR = '{0}## ---({1})---'.format(os.linesep*2, time.ctime())
@@ -110,7 +109,8 @@ class ClientWidget(QWidget, SaveHistoryMixin):
                  options_button=None,
                  show_elapsed_time=False,
                  reset_warning=True,
-                 ask_before_restart=True):
+                 ask_before_restart=True,
+                 css_path=None):
         super(ClientWidget, self).__init__(plugin)
         SaveHistoryMixin.__init__(self, history_filename)
 
@@ -136,6 +136,11 @@ class ClientWidget(QWidget, SaveHistoryMixin):
         self.stderr_dir = None
         self.is_error_shown = False
 
+        if css_path is None:
+            self.css_path = CSS_PATH
+        else:
+            self.css_path = css_path
+
         # --- Widgets
         self.shellwidget = ShellWidget(config=config_options,
                                        ipyclient=self,
@@ -143,9 +148,13 @@ class ClientWidget(QWidget, SaveHistoryMixin):
                                        interpreter_versions=interpreter_versions,
                                        external_kernel=external_kernel,
                                        local_kernel=True)
-        self.infowidget = WebView(self)
-        self.set_infowidget_font()
+
+        self.infowidget = plugin.infowidget
+        self.blank_page = self._create_blank_page()
         self.loading_page = self._create_loading_page()
+        # To keep a reference to the page to be displayed
+        # in infowidget
+        self.info_page = None
         self._show_loading_page()
 
         # Elapsed time
@@ -156,7 +165,7 @@ class ClientWidget(QWidget, SaveHistoryMixin):
                                          toggled=self.set_elapsed_time_visible)
 
         # --- Layout
-        vlayout = QVBoxLayout()
+        self.layout = QVBoxLayout()
         toolbar_buttons = self.get_toolbar_buttons()
 
         hlayout = QHBoxLayout()
@@ -165,11 +174,11 @@ class ClientWidget(QWidget, SaveHistoryMixin):
         for button in toolbar_buttons:
             hlayout.addWidget(button)
 
-        vlayout.addLayout(hlayout)
-        vlayout.setContentsMargins(0, 0, 0, 0)
-        vlayout.addWidget(self.shellwidget)
-        vlayout.addWidget(self.infowidget)
-        self.setLayout(vlayout)
+        self.layout.addLayout(hlayout)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.addWidget(self.shellwidget)
+        self.layout.addWidget(self.infowidget)
+        self.setLayout(self.layout)
 
         # --- Exit function
         self.exit_callback = lambda: plugin.close_client(client=self)
@@ -316,12 +325,13 @@ class ClientWidget(QWidget, SaveHistoryMixin):
         # Create error page
         message = _("An error ocurred while starting the kernel")
         kernel_error_template = Template(KERNEL_ERROR)
-        page = kernel_error_template.substitute(css_path=CSS_PATH,
-                                                message=message,
-                                                error=error)
+        self.info_page = kernel_error_template.substitute(
+            css_path=self.css_path,
+            message=message,
+            error=error)
 
         # Show error
-        self.infowidget.setHtml(page, QUrl.fromLocalFile(CSS_PATH))
+        self.set_info_page()
         self.shellwidget.hide()
         self.infowidget.show()
 
@@ -361,10 +371,6 @@ class ClientWidget(QWidget, SaveHistoryMixin):
 
     def get_options_menu(self):
         """Return options menu"""
-        reset_action = create_action(self, _("Remove all variables"),
-                                     icon=ima.icon('editdelete'),
-                                     triggered=self.reset_namespace)
-
         env_action = create_action(
                         self,
                         _("Show environment variables"),
@@ -380,14 +386,15 @@ class ClientWidget(QWidget, SaveHistoryMixin):
                          )
 
         self.show_time_action.setChecked(self.show_elapsed_time)
-        additional_actions = [reset_action,
-                              MENU_SEPARATOR,
+        additional_actions = [MENU_SEPARATOR,
                               env_action,
                               syspath_action,
                               self.show_time_action]
 
         if self.menu_actions is not None:
-            return self.menu_actions + additional_actions
+            console_menu = self.menu_actions + additional_actions
+            return console_menu
+
         else:
             return additional_actions
 
@@ -405,6 +412,8 @@ class ClientWidget(QWidget, SaveHistoryMixin):
             self.disable_stop_button()
             # set click event handler
             self.stop_button.clicked.connect(self.stop_button_click_handler)
+            if is_dark_interface():
+                self.stop_button.setStyleSheet("QToolButton{padding: 3px;}")
         if self.stop_button is not None:
             buttons.append(self.stop_button)
 
@@ -416,6 +425,8 @@ class ClientWidget(QWidget, SaveHistoryMixin):
                                     icon=ima.icon('editdelete'),
                                     tip=_("Remove all variables"),
                                     triggered=self.reset_namespace)
+            if is_dark_interface():
+                self.reset_button.setStyleSheet("QToolButton{padding: 3px;}")
         if self.reset_button is not None:
             buttons.append(self.reset_button)
 
@@ -471,11 +482,6 @@ class ClientWidget(QWidget, SaveHistoryMixin):
         """Set IPython widget's font"""
         self.shellwidget._control.setFont(font)
         self.shellwidget.font = font
-
-    def set_infowidget_font(self):
-        """Set font for infowidget"""
-        font = get_font(option='rich_font')
-        self.infowidget.set_font(font)
 
     def set_color_scheme(self, color_scheme, reset=True):
         """Set IPython color scheme."""
@@ -596,7 +602,7 @@ class ClientWidget(QWidget, SaveHistoryMixin):
     def show_syspath(self, syspath):
         """Show sys.path contents."""
         if syspath is not None:
-            editor = CollectionsEditor()
+            editor = CollectionsEditor(self)
             editor.setup(syspath, title="sys.path contents", readonly=True,
                          width=600, icon=ima.icon('syspath'))
             self.dialog_manager.show(editor)
@@ -606,7 +612,7 @@ class ClientWidget(QWidget, SaveHistoryMixin):
     @Slot(object)
     def show_env(self, env):
         """Show environment variables."""
-        self.dialog_manager.show(RemoteEnvDialog(env))
+        self.dialog_manager.show(RemoteEnvDialog(env, parent=self))
 
     def create_time_label(self):
         """Create elapsed time label widget (if necessary) and return it"""
@@ -648,6 +654,14 @@ class ClientWidget(QWidget, SaveHistoryMixin):
         if self.time_label is not None:
             self.time_label.setVisible(state)
 
+    def set_info_page(self):
+        """Set current info_page."""
+        if self.info_page is not None:
+            self.infowidget.setHtml(
+                self.info_page,
+                QUrl.fromLocalFile(self.css_path)
+            )
+
     #------ Private API -------------------------------------------------------
     def _create_loading_page(self):
         """Create html page to show while the kernel is starting"""
@@ -656,30 +670,47 @@ class ClientWidget(QWidget, SaveHistoryMixin):
         if os.name == 'nt':
             loading_img = loading_img.replace('\\', '/')
         message = _("Connecting to kernel...")
-        page = loading_template.substitute(css_path=CSS_PATH,
+        page = loading_template.substitute(css_path=self.css_path,
                                            loading_img=loading_img,
                                            message=message)
+        return page
+
+    def _create_blank_page(self):
+        """Create html page to show while the kernel is starting"""
+        loading_template = Template(BLANK)
+        page = loading_template.substitute(css_path=self.css_path)
         return page
 
     def _show_loading_page(self):
         """Show animation while the kernel is loading."""
         self.shellwidget.hide()
         self.infowidget.show()
-        self.infowidget.setHtml(self.loading_page,
-                                QUrl.fromLocalFile(CSS_PATH))
+        self.info_page = self.loading_page
+        self.set_info_page()
 
     def _hide_loading_page(self):
         """Hide animation shown while the kernel is loading."""
         self.infowidget.hide()
         self.shellwidget.show()
-        self.infowidget.setHtml(BLANK)
+        self.info_page = self.blank_page
+        self.set_info_page()
         self.shellwidget.sig_prompt_ready.disconnect(self._hide_loading_page)
 
     def _read_stderr(self):
         """Read the stderr file of the kernel."""
+        # We need to read stderr_file as bytes to be able to
+        # detect its encoding with chardet
         f = open(self.stderr_file, 'rb')
+
         try:
             stderr_text = f.read()
+
+            # This is needed to avoid showing an empty error message
+            # when the kernel takes too much time to start.
+            # See issue 8581
+            if not stderr_text:
+                return ''
+
             # This is needed since the stderr file could be encoded
             # in something different to utf-8.
             # See issue 4191

@@ -22,11 +22,11 @@ import weakref
 
 # Third party imports
 from qtpy.QtCore import QTimer, Qt
-from qtpy.QtGui import QColor, QTextCursor, QTextBlock, QTextDocument, QCursor
+from qtpy.QtGui import (QColor, QTextBlockUserData, QTextCursor, QTextBlock,
+                        QTextDocument, QCursor)
 from qtpy.QtWidgets import QApplication
 
 # Local imports
-from spyder.config.base import debug_print
 from spyder.py3compat import to_text_string
 
 
@@ -49,6 +49,26 @@ def drift_color(base_color, factor=110):
             return drift_color(QColor('#101010'), factor + 20)
         else:
             return base_color.lighter(factor + 10)
+
+
+class BlockUserData(QTextBlockUserData):
+    def __init__(self, editor, cursor=None, color=None):
+        QTextBlockUserData.__init__(self)
+        self.editor = editor
+        self.breakpoint = False
+        self.breakpoint_condition = None
+        self.code_analysis = []
+        self.todo = ''
+        self.selection = cursor
+        self.color = color
+        self.editor.blockuserdata_list.append(self)
+
+    def is_empty(self):
+        return not self.breakpoint and not self.code_analysis and not self.todo
+
+    def __del__(self):
+        bud_list = self.editor.blockuserdata_list
+        bud_list.pop(bud_list.index(self))
 
 
 class DelayJobRunner(object):
@@ -142,7 +162,6 @@ class TextHelper(object):
         """
         line = min(line, self.line_count())
         text_cursor = self._move_cursor_to(line)
-        debug_print(end_column)
         if column:
             text_cursor.movePosition(text_cursor.Right, text_cursor.MoveAnchor,
                                      column)

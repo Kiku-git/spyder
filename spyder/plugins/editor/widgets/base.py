@@ -13,14 +13,14 @@
 
 # Standard library imports
 import os
-import re
+import os.path as osp
 import sys
 
 # Third party imports
 from qtpy.compat import to_qvariant
-from qtpy.QtCore import QEvent, QEventLoop, QPoint, Qt, Signal, Slot, QTimer
-from qtpy.QtGui import (QClipboard, QColor, QFont, QMouseEvent, QPalette,
-                        QTextCharFormat, QTextFormat, QTextOption, QTextCursor)
+from qtpy.QtCore import QEvent, QEventLoop, QPoint, Qt, Signal, Slot
+from qtpy.QtGui import (QClipboard, QColor, QMouseEvent, QPalette, QTextFormat,
+                        QTextOption, QTextCursor)
 from qtpy.QtWidgets import (QAbstractItemView, QApplication, QListWidget,
                             QListWidgetItem, QMainWindow, QPlainTextEdit,
                             QToolTip)
@@ -28,27 +28,13 @@ from qtpy.QtWidgets import (QAbstractItemView, QApplication, QListWidget,
 # Local imports
 from spyder.config.gui import get_font
 from spyder.config.main import CONF
-from spyder.py3compat import PY3, str_lower, to_text_string
+from spyder.py3compat import PY3, to_text_string
 from spyder.utils import icon_manager as ima
 from spyder.widgets.calltip import CallTipWidget
 from spyder.widgets.mixins import BaseEditMixin
-from spyder.plugins.editor.utils.terminal import ANSIEscapeCodeHandler
 from spyder.plugins.editor.api.decoration import TextDecoration, DRAW_ORDERS
 from spyder.plugins.editor.utils.decoration import TextDecorationsManager
 from spyder.plugins.editor.lsp import CompletionItemKind
-
-
-def insert_text_to(cursor, text, fmt):
-    """Helper to print text, taking into account backspaces"""
-    while True:
-        index = text.find(chr(8))  # backspace
-        if index == -1:
-            break
-        cursor.insertText(text[:index], fmt)
-        if cursor.positionInBlock() > 0:
-            cursor.deletePreviousChar()
-        text = text[index+1:]
-    cursor.insertText(text, fmt)
 
 
 class CompletionWidget(QListWidget):
@@ -66,20 +52,27 @@ class CompletionWidget(QListWidget):
         self.hide()
         self.itemActivated.connect(self.item_selected)
         self.currentRowChanged.connect(self.row_changed)
+        self.is_internal_console = False
 
     def setup_appearance(self, size, font):
         self.resize(*size)
         self.setFont(font)
 
-    def show_list(self, completion_list, automatic=True):
-        # types = [c[1] for c in completion_list]
-        # completion_list = [c[0] for c in completion_list]
-        # if len(completion_list) == 1 and not automatic:
-        #     self.textedit.insert_completion(
-        #         completion_list[0]['insertText'])
-        #     return
+    def show_list(self, completion_list, position):
+        # Completions are handled differently for the Internal
+        # console.
+        if position is None:
+            # Somehow the position was not saved.
+            # Hope that the current position is still valid
+            self.position = self.textedit.textCursor().position()
+        elif self.textedit.textCursor().position() < position:
+            # hide the text as we moved away from the position
+            return
+        else:
+            self.position = position
 
-        self.textedit.completion_text = ''
+        if not isinstance(completion_list[0], dict):
+            self.is_internal_console = True
         self.completion_list = completion_list
         self.clear()
 
@@ -92,14 +85,14 @@ class CompletionWidget(QListWidget):
                      CompletionItemKind.CONSTRUCTOR: 'method',
                      CompletionItemKind.REFERENCE: 'attribute'}
 
-        # self.type_list = types
-        # if any(types):
         for completion in completion_list:
-            icon = icons_map.get(completion['kind'], 'no_match')
-            self.addItem(
-                QListWidgetItem(ima.icon(icon), completion['insertText']))
-        # else:
-            # self.addItems(completion_list)
+            if not self.is_internal_console:
+                icon = icons_map.get(completion['kind'], 'no_match')
+                self.addItem(
+                    QListWidgetItem(ima.icon(icon), completion['insertText']))
+            else:
+                # This is used by the Internal console.
+                self.addItem(QListWidgetItem(completion[0]))
 
         self.setCurrentRow(0)
 
@@ -152,13 +145,15 @@ class CompletionWidget(QListWidget):
             point = ancestor.mapFromGlobal(point)
         self.move(point)
 
-        tooltip_point = QPoint(point)
-        tooltip_point.setX(point.x() + self.width())
-        tooltip_point.setY(point.y() - (3 * self.height()) // 4)
-        for completion in completion_list:
-            completion['point'] = tooltip_point
+        if not self.is_internal_console:
+            tooltip_point = QPoint(point)
+            tooltip_point.setX(point.x() + self.width())
+            tooltip_point.setY(point.y() - (3 * self.height()) // 4)
+            for completion in completion_list:
+                completion['point'] = tooltip_point
 
-        if to_text_string(self.textedit.completion_text):
+        if to_text_string(to_text_string(
+                self.textedit.get_current_word(completion=True))):
             # When initialized, if completion text is not empty, we need
             # to update the displayed list:
             self.update_current()
@@ -196,8 +191,16 @@ class CompletionWidget(QListWidget):
             else:
                 QListWidget.keyPressEvent(self, event)
         elif len(text) or key == Qt.Key_Backspace:
-            self.textedit.keyPressEvent(event)
-            self.update_current()
+            # If the cursor goes behind the current position,
+            # the autocomplete is no longer relevant
+            if self.textedit.textCursor().position() < self.position or (
+                    key == Qt.Key_Backspace and (
+                    self.textedit.textCursor().position() <= self.position)):
+                self.hide()
+                self.textedit.keyPressEvent(event)
+            else:
+                self.textedit.keyPressEvent(event)
+                self.update_current()
         elif modifier:
             self.textedit.keyPressEvent(event)
         else:
@@ -205,10 +208,15 @@ class CompletionWidget(QListWidget):
             QListWidget.keyPressEvent(self, event)
 
     def update_current(self):
-        completion_text = to_text_string(self.textedit.completion_text)
+        completion_text = to_text_string(
+                self.textedit.get_current_word(completion=True))
         if completion_text:
             for row, completion in enumerate(self.completion_list):
-                completion_label = completion['filterText']
+                if not self.is_internal_console:
+                    completion_label = completion['filterText']
+                else:
+                    completion_label = completion[0]
+
                 if not self.case_sensitive:
                     print(completion_text)  # spyder: test-skip
                     completion_label = completion.lower()
@@ -218,8 +226,6 @@ class CompletionWidget(QListWidget):
                     self.scrollTo(self.currentIndex(),
                                   QAbstractItemView.PositionAtTop)
                     break
-            # if not match:
-                # self.hide()
         else:
             self.hide()
 
@@ -237,9 +243,8 @@ class CompletionWidget(QListWidget):
     def item_selected(self, item=None):
         if item is None:
             item = self.currentItem()
-        # index = self.currentIndex()
-        # self.textedit.show_calltip()
-        self.textedit.insert_completion(to_text_string(item.text()))
+        self.textedit.insert_completion(to_text_string(item.text()),
+                                        self.position)
         self.hide()
 
     @Slot(int)
@@ -293,7 +298,6 @@ class TextEditBaseWidget(QPlainTextEdit, BaseEditMixin):
         self.codecompletion_auto = False
         self.codecompletion_case = True
         self.codecompletion_enter = False
-        self.completion_text = ""
         self.setup_completion()
 
         self.calltip_widget = CallTipWidget(self, hide_timer_on=False)
@@ -652,55 +656,38 @@ class TextEditBaseWidget(QPlainTextEdit, BaseEditMixin):
 
         # Remove any leading whitespace or comment lines
         # since they confuse the reserved word detector that follows below
+        lines_removed = 0
         while lines:
             first_line = lines[0].lstrip()
             if first_line == '' or first_line[0] == '#':
+                lines_removed += 1
                 lines.pop(0)
             else:
                 break
 
-        # Add an EOL character after indentation blocks that start with some
-        # Python reserved words, so that it gets evaluated automatically
-        # by the console
-        varname = re.compile(r'[a-zA-Z0-9_]*')  # Matches valid variable names.
-        maybe = False
-        nextexcept = ()
-        for n, line in enumerate(lines):
-            if not _indent(line):
-                word = varname.match(line).group()
-                if maybe and word not in nextexcept:
-                    lines[n-1] += ls
-                    maybe = False
-                if word:
-                    if word in ('def', 'for', 'while', 'with', 'class'):
-                        maybe = True
-                        nextexcept = ()
-                    elif word == 'if':
-                        maybe = True
-                        nextexcept = ('elif', 'else')
-                    elif word == 'try':
-                        maybe = True
-                        nextexcept = ('except', 'finally')
-        if maybe:
-            if lines[-1].strip() == '':
-                lines[-1] += ls
-            else:
-                lines.append(ls)
+        # Add an EOL character after the last line of code so that it gets
+        # evaluated automatically by the console and any quote characters
+        # are separated from the triple quotes of runcell
+        lines.append(ls)
 
-        return ls.join(lines)
+        # Add removed lines back to have correct traceback line numbers
+        leading_lines_str = ls * lines_removed
+
+        return leading_lines_str + ls.join(lines)
 
     def __exec_cell(self):
+        ls = self.get_line_separator()
         init_cursor = QTextCursor(self.textCursor())
         start_pos, end_pos = self.__save_selection()
         cursor, whole_file_selected = self.select_current_cell()
-        if not whole_file_selected:
-            self.setTextCursor(cursor)
+        self.setTextCursor(cursor)
+        line_from, line_to = self.get_selection_bounds()
         text = self.get_selection_as_executable_code()
         self.last_cursor_cell = init_cursor
         self.__restore_selection(start_pos, end_pos)
         if text is not None:
-            text = text.rstrip()
-        return text
+            text = ls * line_from + text
+        return text, line_from
 
     def get_cell_as_executable_code(self):
         """Return cell contents as executable code"""
@@ -711,8 +698,8 @@ class TextEditBaseWidget(QPlainTextEdit, BaseEditMixin):
         if self.last_cursor_cell:
             self.setTextCursor(self.last_cursor_cell)
             self.highlight_current_cell()
-            text = self.__exec_cell()
-        return text
+            text, line = self.__exec_cell()
+        return text, line
 
     def is_cell_separator(self, cursor=None, block=None):
         """Return True if cursor (or text block) is on a block separator"""
@@ -1105,55 +1092,34 @@ class TextEditBaseWidget(QPlainTextEdit, BaseEditMixin):
         except (IndexError, TypeError):
             QToolTip.hideText()
 
-    def show_completion_widget(self, textlist, automatic=True):
-        """Show completion widget"""
-        self.completion_widget.show_list(textlist, automatic=automatic)
-
-    def hide_completion_widget(self):
-        """Hide completion widget"""
-        self.completion_widget.hide()
-
-    def show_completion_list(self, completions, completion_text="",
-                             automatic=True):
-        """Display the possible completions"""
-        if not completions:
-            return
-        if not isinstance(completions[0], tuple):
-            completions = [(c, '') for c in completions]
-        if len(completions) == 1 and completions[0][0] == completion_text:
-            return
-        self.completion_text = completion_text
-        # Sorting completion list (entries starting with underscore are
-        # put at the end of the list):
-        underscore = set([(comp, t) for (comp, t) in completions
-                          if comp.startswith('_')])
-
-        completions = sorted(set(completions) - underscore,
-                             key=lambda x: str_lower(x[0]))
-        completions += sorted(underscore, key=lambda x: str_lower(x[0]))
-        self.show_completion_widget(completions, automatic=automatic)
-
     def select_completion_list(self):
         """Completion list is active, Enter was just pressed"""
         self.completion_widget.item_selected()
 
-    def insert_completion(self, text):
+    def insert_completion(self, text, position):
         if text:
-            cursor = self.textCursor()
-            word = self.get_current_word()
-            start = len(word) if word is not None else 0
-            text = text[start:]
-            # cursor.movePosition(QTextCursor.PreviousCharacter,
-            #                     QTextCursor.KeepAnchor,
-            #                     len(self.completion_text))
-            # cursor.removeSelectedText()
+            # Set position to where the request was made
+            if position is not None:
+                cursor = self.textCursor()
+                cursor.setPosition(position)
+                self.setTextCursor(cursor)
+            # Move to the beginning of the selected word
+            result = self.get_current_word_and_position(completion=True)
+            if result is not None:
+                position = result[1]
+                cursor = self.textCursor()
+                cursor.setPosition(position)
+                # Remove the word under the cursor
+                cursor.select(QTextCursor.WordUnderCursor)
+                cursor.removeSelectedText()
+                self.setTextCursor(cursor)
+            # Add text
             self.insert_text(text)
             self.document_did_change()
 
     def is_completion_widget_visible(self):
         """Return True is completion list widget is visible"""
         return self.completion_widget.isVisible()
-
 
     #------Standard keys
     def stdkey_clear(self):
@@ -1271,241 +1237,3 @@ class TextEditBaseWidget(QPlainTextEdit, BaseEditMixin):
                 return
         QPlainTextEdit.wheelEvent(self, event)
         self.highlight_current_cell()
-
-
-class QtANSIEscapeCodeHandler(ANSIEscapeCodeHandler):
-    def __init__(self):
-        ANSIEscapeCodeHandler.__init__(self)
-        self.base_format = None
-        self.current_format = None
-
-    def set_light_background(self, state):
-        if state:
-            self.default_foreground_color = 30
-            self.default_background_color = 47
-        else:
-            self.default_foreground_color = 37
-            self.default_background_color = 40
-
-    def set_base_format(self, base_format):
-        self.base_format = base_format
-
-    def get_format(self):
-        return self.current_format
-
-    def set_style(self):
-        """
-        Set font style with the following attributes:
-        'foreground_color', 'background_color', 'italic',
-        'bold' and 'underline'
-        """
-        if self.current_format is None:
-            assert self.base_format is not None
-            self.current_format = QTextCharFormat(self.base_format)
-        # Foreground color
-        if self.foreground_color is None:
-            qcolor = self.base_format.foreground()
-        else:
-            cstr = self.ANSI_COLORS[self.foreground_color-30][self.intensity]
-            qcolor = QColor(cstr)
-        self.current_format.setForeground(qcolor)
-        # Background color
-        if self.background_color is None:
-            qcolor = self.base_format.background()
-        else:
-            cstr = self.ANSI_COLORS[self.background_color-40][self.intensity]
-            qcolor = QColor(cstr)
-        self.current_format.setBackground(qcolor)
-
-        font = self.current_format.font()
-        # Italic
-        if self.italic is None:
-            italic = self.base_format.fontItalic()
-        else:
-            italic = self.italic
-        font.setItalic(italic)
-        # Bold
-        if self.bold is None:
-            bold = self.base_format.font().bold()
-        else:
-            bold = self.bold
-        font.setBold(bold)
-        # Underline
-        if self.underline is None:
-            underline = self.base_format.font().underline()
-        else:
-            underline = self.underline
-        font.setUnderline(underline)
-        self.current_format.setFont(font)
-
-
-def inverse_color(color):
-    color.setHsv(color.hue(), color.saturation(), 255-color.value())
-
-
-class ConsoleFontStyle(object):
-    def __init__(self, foregroundcolor, backgroundcolor,
-                 bold, italic, underline):
-        self.foregroundcolor = foregroundcolor
-        self.backgroundcolor = backgroundcolor
-        self.bold = bold
-        self.italic = italic
-        self.underline = underline
-        self.format = None
-
-    def apply_style(self, font, light_background, is_default):
-        self.format = QTextCharFormat()
-        self.format.setFont(font)
-        foreground = QColor(self.foregroundcolor)
-        if not light_background and is_default:
-            inverse_color(foreground)
-        self.format.setForeground(foreground)
-        background = QColor(self.backgroundcolor)
-        if not light_background:
-            inverse_color(background)
-        self.format.setBackground(background)
-        font = self.format.font()
-        font.setBold(self.bold)
-        font.setItalic(self.italic)
-        font.setUnderline(self.underline)
-        self.format.setFont(font)
-
-
-class ConsoleBaseWidget(TextEditBaseWidget):
-    """Console base widget"""
-    BRACE_MATCHING_SCOPE = ('sol', 'eol')
-    COLOR_PATTERN = re.compile(r'\x01?\x1b\[(.*?)m\x02?')
-    exception_occurred = Signal(str, bool)
-    userListActivated = Signal(int, str)
-    completion_widget_activated = Signal(str)
-
-    def __init__(self, parent=None):
-        TextEditBaseWidget.__init__(self, parent)
-
-        self.light_background = True
-
-        self.setMaximumBlockCount(300)
-
-        # ANSI escape code handler
-        self.ansi_handler = QtANSIEscapeCodeHandler()
-
-        # Disable undo/redo (nonsense for a console widget...):
-        self.setUndoRedoEnabled(False)
-
-        self.userListActivated.connect(lambda user_id, text:
-                                   self.completion_widget_activated.emit(text))
-
-        self.default_style = ConsoleFontStyle(
-                            foregroundcolor=0x000000, backgroundcolor=0xFFFFFF,
-                            bold=False, italic=False, underline=False)
-        self.error_style  = ConsoleFontStyle(
-                            foregroundcolor=0xFF0000, backgroundcolor=0xFFFFFF,
-                            bold=False, italic=False, underline=False)
-        self.traceback_link_style  = ConsoleFontStyle(
-                            foregroundcolor=0x0000FF, backgroundcolor=0xFFFFFF,
-                            bold=True, italic=False, underline=True)
-        self.prompt_style  = ConsoleFontStyle(
-                            foregroundcolor=0x00AA00, backgroundcolor=0xFFFFFF,
-                            bold=True, italic=False, underline=False)
-        self.font_styles = (self.default_style, self.error_style,
-                            self.traceback_link_style, self.prompt_style)
-        self.set_pythonshell_font()
-        self.setMouseTracking(True)
-
-    def set_light_background(self, state):
-        self.light_background = state
-        if state:
-            self.set_palette(background=QColor(Qt.white),
-                             foreground=QColor(Qt.darkGray))
-        else:
-            self.set_palette(background=QColor(Qt.black),
-                             foreground=QColor(Qt.lightGray))
-        self.ansi_handler.set_light_background(state)
-        self.set_pythonshell_font()
-
-    #------Python shell
-    def insert_text(self, text):
-        """Reimplement TextEditBaseWidget method"""
-        # Eventually this maybe should wrap to insert_text_to if
-        # backspace-handling is required
-        self.textCursor().insertText(text, self.default_style.format)
-
-    def paste(self):
-        """Reimplement Qt method"""
-        if self.has_selected_text():
-            self.remove_selected_text()
-        self.insert_text(QApplication.clipboard().text())
-
-    def append_text_to_shell(self, text, error, prompt):
-        """
-        Append text to Python shell
-        In a way, this method overrides the method 'insert_text' when text is
-        inserted at the end of the text widget for a Python shell
-
-        Handles error messages and show blue underlined links
-        Handles ANSI color sequences
-        Handles ANSI FF sequence
-        """
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        if '\r' in text:    # replace \r\n with \n
-            text = text.replace('\r\n', '\n')
-            text = text.replace('\r', '\n')
-        while True:
-            index = text.find(chr(12))
-            if index == -1:
-                break
-            text = text[index+1:]
-            self.clear()
-        if error:
-            is_traceback = False
-            for text in text.splitlines(True):
-                if text.startswith('  File') \
-                and not text.startswith('  File "<'):
-                    is_traceback = True
-                    # Show error links in blue underlined text
-                    cursor.insertText('  ', self.default_style.format)
-                    cursor.insertText(text[2:],
-                                      self.traceback_link_style.format)
-                else:
-                    # Show error/warning messages in red
-                    cursor.insertText(text, self.error_style.format)
-            self.exception_occurred.emit(text, is_traceback)
-        elif prompt:
-            # Show prompt in green
-            insert_text_to(cursor, text, self.prompt_style.format)
-        else:
-            # Show other outputs in black
-            last_end = 0
-            for match in self.COLOR_PATTERN.finditer(text):
-                insert_text_to(cursor, text[last_end:match.start()],
-                               self.default_style.format)
-                last_end = match.end()
-                try:
-                    for code in [int(_c) for _c in match.group(1).split(';')]:
-                        self.ansi_handler.set_code(code)
-                except ValueError:
-                    pass
-                self.default_style.format = self.ansi_handler.get_format()
-            insert_text_to(cursor, text[last_end:], self.default_style.format)
-#            # Slower alternative:
-#            segments = self.COLOR_PATTERN.split(text)
-#            cursor.insertText(segments.pop(0), self.default_style.format)
-#            if segments:
-#                for ansi_tags, text in zip(segments[::2], segments[1::2]):
-#                    for ansi_tag in ansi_tags.split(';'):
-#                        self.ansi_handler.set_code(int(ansi_tag))
-#                    self.default_style.format = self.ansi_handler.get_format()
-#                    cursor.insertText(text, self.default_style.format)
-        self.set_cursor_position('eof')
-        self.setCurrentCharFormat(self.default_style.format)
-
-    def set_pythonshell_font(self, font=None):
-        """Python Shell only"""
-        if font is None:
-            font = QFont()
-        for style in self.font_styles:
-            style.apply_style(font=font,
-                              light_background=self.light_background,
-                              is_default=style is self.default_style)
-        self.ansi_handler.set_base_format(self.default_style.format)

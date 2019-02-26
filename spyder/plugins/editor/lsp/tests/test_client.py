@@ -7,6 +7,7 @@
 import os
 from textwrap import dedent
 
+from flaky import flaky
 import pytest
 from qtpy.QtCore import QObject, Signal, Slot
 
@@ -29,16 +30,18 @@ class LSPEditor(QObject):
 def lsp_client(qtbot):
     config = CONF.get('lsp-server', 'python')
     lsp_editor = LSPEditor()
-    lsp = LSPClient(None, config['args'], config, config['external'],
-                    plugin_configurations=config.get('configurations', {}),
+    lsp = LSPClient(parent=None,
+                    server_settings=config,
                     language='python')
     lsp.register_plugin_type(
         LSPEventTypes.DOCUMENT, lsp_editor.sig_lsp_notification)
-    # qtbot.addWidget(lsp)
     yield lsp, lsp_editor
     if os.name != 'nt':
         lsp.stop()
 
+
+@pytest.mark.slow
+@flaky(max_runs=5)
 @pytest.mark.skipif(os.name == 'nt', reason="Fails on Windows")
 def test_initialization(qtbot, lsp_client):
     lsp, lsp_editor = lsp_client
@@ -48,6 +51,8 @@ def test_initialization(qtbot, lsp_client):
     assert all([option in SERVER_CAPABILITES for option in options.keys()])
 
 
+@pytest.mark.slow
+@flaky(max_runs=5)
 @pytest.mark.skipif(os.name == 'nt', reason="Fails on Windows")
 def test_get_signature(qtbot, lsp_client):
     lsp, lsp_editor = lsp_client
@@ -80,6 +85,8 @@ def test_get_signature(qtbot, lsp_client):
     assert response['params']['signatures']['label'].startswith('walk')
 
 
+@pytest.mark.slow
+@flaky(max_runs=5)
 @pytest.mark.skipif(os.name == 'nt', reason="Fails on Windows")
 def test_get_completions(qtbot, lsp_client):
     lsp, lsp_editor = lsp_client
@@ -113,6 +120,8 @@ def test_get_completions(qtbot, lsp_client):
     assert 'os' in [x['label'] for x in completions]
 
 
+@pytest.mark.slow
+@flaky(max_runs=5)
 @pytest.mark.skipif(os.name == 'nt', reason="Fails on Windows")
 def test_go_to_definition(qtbot, lsp_client):
     lsp, lsp_editor = lsp_client
@@ -146,6 +155,8 @@ def test_go_to_definition(qtbot, lsp_client):
     assert 'os.py' in definition['file']
 
 
+@pytest.mark.slow
+@flaky(max_runs=3)
 @pytest.mark.skipif(os.name == 'nt', reason="Fails on Windows")
 def test_local_signature(qtbot, lsp_client):
     lsp, lsp_editor = lsp_client

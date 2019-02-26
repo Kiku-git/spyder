@@ -45,7 +45,7 @@ from qtpy.QtWidgets import (QApplication, QCheckBox, QDialog, QGridLayout,
                             QMessageBox, QPushButton, QTableView,
                             QScrollBar, QTableWidget, QFrame,
                             QItemDelegate)
-from pandas import DataFrame, Index, Series
+from pandas import DataFrame, Index, Series, isna
 try:
     from pandas._libs.tslib import OutOfBoundsDatetime
 except ImportError:  # For pandas version < 0.20
@@ -127,6 +127,7 @@ class DataFrameModel(QAbstractTableModel):
         self.df_header = dataFrame.columns.tolist()
         self._format = format
         self.complex_intran = None
+        self.display_error_idxs = []
         
         self.total_rows = self.df.shape[0]
         self.total_cols = self.df.shape[1]
@@ -271,7 +272,7 @@ class DataFrameModel(QAbstractTableModel):
         if not self.bgcolor_enabled:
             return
         value = self.get_value(index.row(), column)
-        if self.max_min_col[column] is None:
+        if self.max_min_col[column] is None or isna(value):
             color = QColor(BACKGROUND_NONNUMBER_COLOR)
             if is_text_string(value):
                 color.setAlphaF(BACKGROUND_STRING_ALPHA)
@@ -331,11 +332,19 @@ class DataFrameModel(QAbstractTableModel):
                 # what is shown by Spyder
                 return value
             else:
-                return to_qvariant(to_text_string(value))
+                try:
+                    return to_qvariant(to_text_string(value))
+                except Exception:
+                    self.display_error_idxs.append(index)
+                    return u'Display Error!'
         elif role == Qt.BackgroundColorRole:
             return to_qvariant(self.get_bgcolor(index))
         elif role == Qt.FontRole:
             return to_qvariant(get_font(font_size_delta=DEFAULT_SMALL_DELTA))
+        elif role == Qt.ToolTipRole:
+            if index in self.display_error_idxs:
+                return _("It is not possible to display this value because\n"
+                         "an error ocurred while trying to do it")
         return to_qvariant()
 
     def sort(self, column, order=Qt.AscendingOrder):
@@ -389,6 +398,8 @@ class DataFrameModel(QAbstractTableModel):
         column = index.column()
         row = index.row()
 
+        if index in self.display_error_idxs:
+            return False
         if change_type is not None:
             try:
                 value = self.data(index, role=Qt.DisplayRole)
@@ -500,12 +511,18 @@ class DataFrameView(QTableView):
 
     def load_more_data(self, value, rows=False, columns=False):
         """Load more rows and columns to display."""
-        if rows and value == self.verticalScrollBar().maximum():
-            self.model().fetch_more(rows=rows)
-            self.sig_fetch_more_rows.emit()
-        if columns and value == self.horizontalScrollBar().maximum():
-            self.model().fetch_more(columns=columns)
-            self.sig_fetch_more_columns.emit()
+        try:
+            if rows and value == self.verticalScrollBar().maximum():
+                self.model().fetch_more(rows=rows)
+                self.sig_fetch_more_rows.emit()
+            if columns and value == self.horizontalScrollBar().maximum():
+                self.model().fetch_more(columns=columns)
+                self.sig_fetch_more_columns.emit()
+
+        except NameError:
+            # Needed to handle a NameError while fetching data when closing
+            # See issue 7880
+            pass
 
     def sortByColumn(self, index):
         """Implement a column sort."""
@@ -694,10 +711,6 @@ class DataFrameHeaderModel(QAbstractTableModel):
             return None
         row, col = ((index.row(), index.column()) if self.axis == 0
                     else (index.column(), index.row()))
-        if role == Qt.BackgroundRole:
-            prev = self.model.header(self.axis, col - 1, row) if col else None
-            cur = self.model.header(self.axis, col, row)
-            return self._palette.midlight() if prev != cur else None
         if role != Qt.DisplayRole:
             return None
         if self.axis == 0 and self._shape[0] <= 1:
@@ -871,7 +884,7 @@ class DataFrameEditor(QDialog):
         self.dataTable.installEventFilter(self)
 
         avg_width = self.fontMetrics().averageCharWidth()
-        self.min_trunc = avg_width * 8  # Minimum size for columns
+        self.min_trunc = avg_width * 12  # Minimum size for columns
         self.max_width = avg_width * 64  # Maximum size for columns
 
         self.setLayout(self.layout)
@@ -1106,7 +1119,7 @@ class DataFrameEditor(QDialog):
         max_row = table.model().rowCount()
         lm_start = time.clock()
         lm_row = 64 if limit_ms else max_row
-        max_width = 0
+        max_width = self.min_trunc
         for row in range(max_row):
             v = table.sizeHintForIndex(table.model().index(row, col))
             max_width = max(max_width, v.width())
@@ -1128,7 +1141,7 @@ class DataFrameEditor(QDialog):
             width = max(min(hdr_width, self.min_trunc), min(self.max_width,
                         data_width))
         else:
-            width = min(self.max_width, hdr_width)
+            width = max(min(self.max_width, hdr_width), self.min_trunc)
         header.setColumnWidth(col, width)
 
     def _resizeColumnsToContents(self, header, data, limit_ms):
@@ -1187,7 +1200,6 @@ class DataFrameEditor(QDialog):
         self._resizeColumnsToContents(self.table_level,
                                       self.table_index, self._max_autosize_ms)
         self._update_layout()
-        self.table_level.resizeColumnsToContents()
 
     def change_bgcolor_enable(self, state):
         """

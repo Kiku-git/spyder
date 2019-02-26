@@ -13,22 +13,23 @@ Spyder MS Language Server v3.0 transport proxy implementation.
 Main point-of-entry to start an LSP ZMQ/TCP transport proxy.
 """
 
-
+# Standard library imports
+import argparse
+import logging
 import os
 import psutil
 import signal
-import logging
-import argparse
+
+# Local imports
+from spyder.plugins.editor.lsp.transport.producer import LanguageServerClient
 from spyder.py3compat import getcwd
-from producer import LanguageServerClient
 
 
-WINDOWS = os.name == 'nt'
+logger = logging.getLogger(__name__)
 
 
 parser = argparse.ArgumentParser(
     description='ZMQ Python-based MS Language-Server v3.0 client for Spyder')
-
 parser.add_argument('--zmq-in-port',
                     default=7000,
                     help="ZMQ (in) port to be contacted")
@@ -55,22 +56,25 @@ parser.add_argument('--transport-debug',
                     default=0,
                     type=int,
                     help='Verbosity level for log messages')
-
 args, unknownargs = parser.parse_known_args()
 
-LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
-              '-35s %(lineno) -5d: %(message)s')
 
+def logger_init(level):
+    """
+    Initialize the logger for this thread.
 
-LEVELS = ['ERROR', 'WARNING', 'INFO', 'DEBUG']
-LEVEL = logging.getLevelName(LEVELS[args.transport_debug])
+    Sets the log level to ERROR (0), WARNING (1), INFO (2), or DEBUG (3),
+    depending on the argument `level`.
+    """
+    levellist = [logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG]
+    handler = logging.StreamHandler()
+    fmt = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
+           '-35s %(lineno) -5d: %(message)s')
+    handler.setFormatter(logging.Formatter(fmt))
+    logger = logging.root
+    logger.addHandler(handler)
+    logger.setLevel(levellist[level])
 
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
-logging.basicConfig(level=logging.ERROR, format=LOG_FORMAT)
-
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(LEVEL)
 
 class TerminateSignal(Exception):
     """Terminal exception descriptor."""
@@ -85,13 +89,13 @@ class SignalManager:
         self.original_sigterm = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGINT, self.exit_gracefully)
         signal.signal(signal.SIGTERM, self.exit_gracefully)
-        if WINDOWS:
+        if os.name == 'nt':
             self.original_sigbreak = signal.getsignal(signal.SIGBREAK)
             signal.signal(signal.SIGBREAK, self.exit_gracefully)
 
     def exit_gracefully(self, signum, frame):
         """Capture exit/kill signal and throw and exception."""
-        LOGGER.info('Termination signal ({}) captured, '
+        logger.info('Termination signal ({}) captured, '
                     'initiating exit sequence'.format(signum))
         raise TerminateSignal("Exit process!")
 
@@ -99,11 +103,12 @@ class SignalManager:
         """Restore signal handlers to their original settings."""
         signal.signal(signal.SIGINT, self.original_sigint)
         signal.signal(signal.SIGTERM, self.original_sigterm)
-        if WINDOWS:
+        if os.name == 'nt':
             signal.signal(signal.SIGBREAK, self.original_sigbreak)
 
 
 if __name__ == '__main__':
+    logger_init(args.transport_debug)
     process = psutil.Process()
     sig_manager = SignalManager()
     client = LanguageServerClient(host=args.server_host,

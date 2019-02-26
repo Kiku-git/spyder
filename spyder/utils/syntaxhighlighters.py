@@ -60,7 +60,7 @@ COLOR_SCHEME_KEYS = {
                       "number":         _("Number:"),
                       "instance":       _("Instance:"),
                       }
-COLOR_SCHEME_NAMES = CONF.get('color_schemes', 'names')
+COLOR_SCHEME_NAMES = CONF.get('appearance', 'names')
 # Mapping for file extensions that use Pygments highlighting but should use
 # different lexers than Pygments' autodetection suggests.  Keys are file
 # extensions or tuples of extensions, values are Pygments lexer names.
@@ -91,9 +91,9 @@ def get_color_scheme(name):
     scheme = {}
     for key in COLOR_SCHEME_KEYS:
         try:
-            scheme[key] = CONF.get('color_schemes', name+'/'+key)
+            scheme[key] = CONF.get('appearance', name+'/'+key)
         except:
-            scheme[key] = CONF.get('color_schemes', 'spyder/'+key)
+            scheme[key] = CONF.get('appearance', 'spyder/'+key)
     return scheme
 
 
@@ -385,6 +385,19 @@ def make_python_patterns(additional_keywords=[], additional_builtins=[]):
                      number, any("SYNC", [r"\n"])])
 
 
+def get_code_cell_name(text):
+    """Returns a code cell name from a code cell comment."""
+    name = text.strip().lstrip("#% ")
+    if name.startswith("<codecell>"):
+        name = name[10:].lstrip()
+    elif name.startswith("In["):
+        name = name[2:]
+        if name.endswith("]:"):
+            name = name[:-1]
+        name = name.strip()
+    return name
+
+
 class PythonSH(BaseSH):
     """Python Syntax Highlighter"""
     # Syntax highlighting rules:
@@ -472,7 +485,7 @@ class PythonSH(BaseSH):
                                     oedata.cell_level = len(cell_head) - 2
                                 oedata.fold_level = start
                                 oedata.def_type = OutlineExplorerData.CELL
-                                oedata.def_name = text.strip()
+                                oedata.def_name = get_code_cell_name(text)
                             elif self.OECOMMENT.match(text.lstrip()):
                                 oedata = OutlineExplorerData()
                                 oedata.text = to_text_string(text).strip()
@@ -488,7 +501,8 @@ class PythonSH(BaseSH):
                                                    self.formats["definition"])
                                     oedata = OutlineExplorerData()
                                     oedata.text = to_text_string(text)
-                                    oedata.fold_level = start
+                                    oedata.fold_level = (len(text)
+                                                         - len(text.lstrip()))
                                     oedata.def_type = self.DEF_TYPES[
                                                         to_text_string(value)]
                                     oedata.def_name = text[start1:end1]
@@ -1223,16 +1237,18 @@ def guess_pygments_highlighter(filename):
     """
     try:
         from pygments.lexers import get_lexer_for_filename, get_lexer_by_name
-        from pygments.util import ClassNotFound
-    except ImportError:
+    except Exception:
         return TextSH
     root, ext = os.path.splitext(filename)
     if ext in custom_extension_lexer_mapping:
-        lexer = get_lexer_by_name(custom_extension_lexer_mapping[ext])
+        try:
+            lexer = get_lexer_by_name(custom_extension_lexer_mapping[ext])
+        except Exception:
+            return TextSH
     else:
         try:
             lexer = get_lexer_for_filename(filename)
-        except ClassNotFound:
+        except Exception:
             return TextSH
     class GuessedPygmentsSH(PygmentsSH):
         _lexer = lexer

@@ -6,10 +6,10 @@
 
 """Spyder Language Server Protocol Client document handler routines."""
 
+import logging
 import os.path as osp
 
 from spyder.py3compat import PY2
-from spyder.config.base import debug_print
 from spyder.plugins.editor.lsp import (
     LSPRequestTypes, InsertTextFormat, CompletionItemKind,
     ClientConstants)
@@ -23,6 +23,9 @@ else:
     import pathlib
     from urllib.parse import urlparse
     from urllib.request import url2pathname
+
+
+logger = logging.getLogger(__name__)
 
 
 def path_as_uri(path):
@@ -40,11 +43,14 @@ class DocumentProvider:
     def process_document_diagnostics(self, response, *args):
         uri = response['uri']
         diagnostics = response['diagnostics']
-        callbacks = self.watched_files[uri]
-        for callback in callbacks:
-            callback.handle_response(
-                LSPRequestTypes.DOCUMENT_PUBLISH_DIAGNOSTICS,
-                {'params': diagnostics})
+        if uri in self.watched_files:
+            callbacks = self.watched_files[uri]
+            for callback in callbacks:
+                callback.handle_response(
+                    LSPRequestTypes.DOCUMENT_PUBLISH_DIAGNOSTICS,
+                    {'params': diagnostics})
+        else:
+            logger.debug("Received diagnotics for file not open: " + uri)
 
     @send_request(
         method=LSPRequestTypes.DOCUMENT_DID_CHANGE, requires_response=False)
@@ -204,11 +210,29 @@ class DocumentProvider:
         }
         return params
 
+    @send_request(method=LSPRequestTypes.DOCUMENT_DID_SAVE,
+                  requires_response=False)
+    def document_did_save_notification(self, params):
+        """
+        Handle the textDocument/didSave message received from an LSP server.
+        """
+        text = None
+        if 'text' in params:
+            text = params['text']
+        params = {
+            'textDocument': {
+                'uri': path_as_uri(params['file'])
+            }
+        }
+        if text is not None:
+            params['text'] = text
+        return params
+
     @send_request(method=LSPRequestTypes.DOCUMENT_DID_CLOSE,
                   requires_response=False)
     def document_did_close(self, params):
         codeeditor = params['codeeditor']
-        debug_print('[{0}] File: {1}'.format(
+        logger.debug('[{0}] File: {1}'.format(
             LSPRequestTypes.DOCUMENT_DID_CLOSE, params['file']))
         filename = path_as_uri(params['file'])
 

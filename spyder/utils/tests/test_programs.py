@@ -15,8 +15,7 @@ from spyder.utils.programs import (run_python_script_in_terminal,
                                    is_python_interpreter,
                                    is_python_interpreter_valid_name,
                                    find_program, shell_split, check_version,
-                                   is_module_installed, get_temp_dir,
-                                   is_stable_version)
+                                   is_module_installed, get_temp_dir)
 
 
 if os.name == 'nt':
@@ -25,7 +24,11 @@ if os.name == 'nt':
     VALID_W_INTERPRETER = os.path.join(python_dir, 'pythonw.exe')
     INVALID_INTERPRETER = os.path.join(python_dir, 'Scripts', 'ipython.exe')
 else:
-    home_dir = os.environ['HOME']
+    if sys.platform.startswith('linux'):
+        home_dir = os.environ['HOME']
+    else:
+        # Parent Miniconda dir in macOS Azure VMs
+        home_dir = os.path.join('/usr', 'local')
     VALID_INTERPRETER = os.path.join(home_dir, 'miniconda', 'bin', 'python')
     VALID_W_INTERPRETER = os.path.join(home_dir, 'miniconda', 'bin', 'pythonw')
     INVALID_INTERPRETER = os.path.join(home_dir, 'miniconda', 'bin', 'ipython')
@@ -111,6 +114,8 @@ def test_is_module_installed():
     assert is_module_installed('jedi', '>=0.7.0')
 
 
+@pytest.mark.skipif(os.name == 'nt' and os.environ.get('AZURE') is not None,
+                    reason="Fails on Windows/Azure")
 def test_is_module_installed_with_custom_interpreter():
     """Test if a module with the proper version is installed"""
     current = sys.executable
@@ -131,13 +136,6 @@ def test_get_temp_dir_ensure_dir_exists():
 
     assert os.path.exists(another_call)
     assert another_call == temp_dir
-
-
-def test_is_stable_version():
-    """Test for is_stable_version."""
-    assert is_stable_version('3.3.0')
-    assert not is_stable_version('4.0.0b1')
-    assert not is_stable_version('3.3.2.dev0')
 
 
 if __name__ == '__main__':

@@ -109,14 +109,6 @@ class CommentItem(TreeItem):
 
 class CellItem(TreeItem):
     def __init__(self, name, line, parent, preceding):
-        name = name.lstrip("#% ")
-        if name.startswith("<codecell>"):
-            name = name[10:].lstrip()
-        elif name.startswith("In["):
-            name = name[2:]
-            if name.endswith("]:"):
-                name = name[:-1]
-            name = name.strip()
         TreeItem.__init__(self, name, line, parent, preceding)
 
     def setup(self):
@@ -142,6 +134,7 @@ def item_at_line(root_item, line):
     the specified 'line' of the editor.
     """
     previous_item = root_item
+    item = root_item
     for item in get_item_children(root_item):
         if item.line > line:
             return previous_item
@@ -168,16 +161,19 @@ def remove_from_tree_cache(tree_cache, line=None, item=None):
 
 class OutlineExplorerTreeWidget(OneColumnTree):
     def __init__(self, parent, show_fullpath=False, show_all_files=True,
-                 group_cells=True, show_comments=True):
+                 group_cells=True, show_comments=True,
+                 sort_files_alphabetically=False):
         self.show_fullpath = show_fullpath
         self.show_all_files = show_all_files
         self.group_cells = group_cells
         self.show_comments = show_comments
+        self.sort_files_alphabetically = sort_files_alphabetically
         OneColumnTree.__init__(self, parent)
-        self.freeze = False # Freezing widget to avoid any unwanted update
+        self.freeze = False  # Freezing widget to avoid any unwanted update
         self.editor_items = {}
         self.editor_tree_cache = {}
         self.editor_ids = {}
+        self.ordered_editor_ids = []
         self.current_editor = None
         title = _("Outline")
         self.set_title(title)
@@ -187,22 +183,27 @@ class OutlineExplorerTreeWidget(OneColumnTree):
     def get_actions_from_items(self, items):
         """Reimplemented OneColumnTree method"""
         fromcursor_act = create_action(self, text=_('Go to cursor position'),
-                        icon=ima.icon('fromcursor'),
-                        triggered=self.go_to_cursor_position)
-        fullpath_act = create_action(self, text=_( 'Show absolute path'),
-                        toggled=self.toggle_fullpath_mode)
+                                       icon=ima.icon('fromcursor'),
+                                       triggered=self.go_to_cursor_position)
+        fullpath_act = create_action(self, text=_('Show absolute path'),
+                                     toggled=self.toggle_fullpath_mode)
         fullpath_act.setChecked(self.show_fullpath)
-        allfiles_act = create_action(self, text=_( 'Show all files'),
-                        toggled=self.toggle_show_all_files)
+        allfiles_act = create_action(self, text=_('Show all files'),
+                                     toggled=self.toggle_show_all_files)
         allfiles_act.setChecked(self.show_all_files)
         comment_act = create_action(self, text=_('Show special comments'),
-                        toggled=self.toggle_show_comments)
+                                    toggled=self.toggle_show_comments)
         comment_act.setChecked(self.show_comments)
         group_cells_act = create_action(self, text=_('Group code cells'),
                                         toggled=self.toggle_group_cells)
         group_cells_act.setChecked(self.group_cells)
+        sort_files_alphabetically_act = create_action(
+            self, text=_('Sort files alphabetically'),
+            toggled=self.toggle_sort_files_alphabetically)
+        sort_files_alphabetically_act.setChecked(
+            self.sort_files_alphabetically)
         actions = [fullpath_act, allfiles_act, group_cells_act, comment_act,
-                   fromcursor_act]
+                   sort_files_alphabetically_act, fromcursor_act]
         return actions
 
     @Slot(bool)
@@ -227,6 +228,10 @@ class OutlineExplorerTreeWidget(OneColumnTree):
             editor_id = self.editor_ids[self.current_editor]
             item = self.editor_items[editor_id]
             self.__hide_or_show_root_items(item)
+            self.__sort_toplevel_items()
+            if self.show_all_files is False:
+                self.root_item_selected(
+                    self.editor_items[self.editor_ids[self.current_editor]])
 
     @Slot(bool)
     def toggle_show_comments(self, state):
@@ -237,6 +242,12 @@ class OutlineExplorerTreeWidget(OneColumnTree):
     def toggle_group_cells(self, state):
         self.group_cells = state
         self.update_all()
+
+    @Slot(bool)
+    def toggle_sort_files_alphabetically(self, state):
+        self.sort_files_alphabetically = state
+        self.update_all()
+        self.__sort_toplevel_items()
 
     @Slot()
     def go_to_cursor_position(self):
@@ -271,7 +282,6 @@ class OutlineExplorerTreeWidget(OneColumnTree):
             root_item = FileRootItem(editor.fname, self, editor.is_python())
             root_item.set_text(fullpath=self.show_fullpath)
             tree_cache = self.populate_branch(editor, root_item)
-            self.__sort_toplevel_items()
             self.__hide_or_show_root_items(root_item)
             self.root_item_selected(root_item)
             self.editor_items[editor_id] = root_item
@@ -279,6 +289,8 @@ class OutlineExplorerTreeWidget(OneColumnTree):
             self.resizeColumnToContents(0)
         if editor not in self.editor_ids:
             self.editor_ids[editor] = editor_id
+            self.ordered_editor_ids.append(editor_id)
+            self.__sort_toplevel_items()
         self.current_editor = editor
 
     def file_renamed(self, editor, new_filename):
@@ -296,12 +308,14 @@ class OutlineExplorerTreeWidget(OneColumnTree):
             tree_cache = self.editor_tree_cache[editor_id]
             self.populate_branch(editor, item, tree_cache)
         self.restore_expanded_state()
-        
+
     def remove_editor(self, editor):
         if editor in self.editor_ids:
             if self.current_editor is editor:
                 self.current_editor = None
             editor_id = self.editor_ids.pop(editor)
+            if editor_id in self.ordered_editor_ids:
+                self.ordered_editor_ids.remove(editor_id)
             if editor_id not in list(self.editor_ids.values()):
                 root_item = self.editor_items.pop(editor_id)
                 self.editor_tree_cache.pop(editor_id)
@@ -310,11 +324,50 @@ class OutlineExplorerTreeWidget(OneColumnTree):
                 except RuntimeError:
                     # item has already been removed
                     pass
-        
+
+    def set_editor_ids_order(self, ordered_editor_ids):
+        """
+        Order the root file items in the Outline Explorer following the
+        provided list of editor ids.
+        """
+        if self.ordered_editor_ids != ordered_editor_ids:
+            self.ordered_editor_ids = ordered_editor_ids
+            if self.sort_files_alphabetically is False:
+                self.__sort_toplevel_items()
+
     def __sort_toplevel_items(self):
-        sort_func = lambda item: osp.basename(item.path.lower())
-        self.sort_top_level_items(key=sort_func)
-            
+        """
+        Sort the root file items in alphabetical order if
+        'sort_files_alphabetically' is True, else order the items as
+        specified in the 'self.ordered_editor_ids' list.
+        """
+        if self.show_all_files is False:
+            return
+
+        current_ordered_items = [self.topLevelItem(index) for index in
+                                 range(self.topLevelItemCount())]
+        if self.sort_files_alphabetically:
+            new_ordered_items = sorted(
+                current_ordered_items,
+                key=lambda item: osp.basename(item.path.lower()))
+        else:
+            new_ordered_items = [
+                self.editor_items.get(e_id) for e_id in
+                self.ordered_editor_ids if
+                self.editor_items.get(e_id) is not None]
+
+        if current_ordered_items != new_ordered_items:
+            selected_items = self.selectedItems()
+            self.save_expanded_state()
+            for index in range(self.topLevelItemCount()):
+                self.takeTopLevelItem(0)
+            for index, item in enumerate(new_ordered_items):
+                self.insertTopLevelItem(index, item)
+            self.restore_expanded_state()
+            self.clearSelection()
+            if selected_items:
+                selected_items[-1].setSelected(True)
+
     def populate_branch(self, editor, root_item, tree_cache=None):
         """
         Generates an outline of the editor's content and stores the result
@@ -397,7 +450,7 @@ class OutlineExplorerTreeWidget(OneColumnTree):
                         continue
                     else:
                         remove_from_tree_cache(tree_cache, line=line_nb)
-                item = CellItem(data.text, line_nb, parent, preceding)
+                item = CellItem(data.def_name, line_nb, parent, preceding)
                 item.setup()
                 debug = "%s -- %s/%s" % (str(item.line).rjust(6),
                                          to_text_string(item.parent().text(0)),
@@ -413,8 +466,6 @@ class OutlineExplorerTreeWidget(OneColumnTree):
             if previous_level is not None:
                 if level == previous_level:
                     pass
-                elif level > previous_level+4: # Invalid indentation
-                    continue
                 elif level > previous_level:
                     ancestors.append((previous_item, previous_level))
                 else:
@@ -437,7 +488,7 @@ class OutlineExplorerTreeWidget(OneColumnTree):
                     else:
                         remove_from_tree_cache(tree_cache, line=line_nb)
                 if data.def_type == data.CELL:
-                    item = CellItem(data.text, line_nb, parent, preceding)
+                    item = CellItem(data.def_name, line_nb, parent, preceding)
                 else:
                     item = CommentItem(data.text, line_nb, parent, preceding)
             elif class_name is not None:
@@ -501,11 +552,12 @@ class OutlineExplorerTreeWidget(OneColumnTree):
         iterator = QTreeWidgetItemIterator(self)
         while iterator.value():
             item = iterator.value()
-            if item.parent():
-                if item.parent().isExpanded():
+            if not item.isHidden():
+                if item.parent():
+                    if item.parent().isExpanded():
+                        items.append(item)
+                else:
                     items.append(item)
-            else:
-                items.append(item)
             iterator += 1
         return items
 
@@ -550,7 +602,9 @@ class OutlineExplorerWidget(QWidget):
     is_visible = Signal()
     
     def __init__(self, parent=None, show_fullpath=True, show_all_files=True,
-                 group_cells=True, show_comments=True, options_button=None):
+                 group_cells=True, show_comments=True,
+                 sort_files_alphabetically=False,
+                 options_button=None):
         QWidget.__init__(self, parent)
 
         self.treewidget = OutlineExplorerTreeWidget(
@@ -558,7 +612,8 @@ class OutlineExplorerWidget(QWidget):
                 show_fullpath=show_fullpath,
                 show_all_files=show_all_files,
                 group_cells=group_cells,
-                show_comments=show_comments)
+                show_comments=show_comments,
+                sort_files_alphabetically=sort_files_alphabetically)
 
         self.visibility_action = create_action(self,
                                            _("Show/hide outline explorer"),
@@ -611,19 +666,23 @@ class OutlineExplorerWidget(QWidget):
         
     def remove_editor(self, editor):
         self.treewidget.remove_editor(editor)
-        
+
     def get_options(self):
         """
         Return outline explorer options
         """
-        return dict(show_fullpath=self.treewidget.show_fullpath,
-                    show_all_files=self.treewidget.show_all_files,
-                    group_cells=self.treewidget.group_cells,
-                    show_comments=self.treewidget.show_comments,
-                    expanded_state=self.treewidget.get_expanded_state(),
-                    scrollbar_position=self.treewidget.get_scrollbar_position(),
-                    visibility=self.isVisible())
-    
+        return dict(
+            show_fullpath=self.treewidget.show_fullpath,
+            show_all_files=self.treewidget.show_all_files,
+            group_cells=self.treewidget.group_cells,
+            show_comments=self.treewidget.show_comments,
+            sort_files_alphabetically=(
+                self.treewidget.sort_files_alphabetically),
+            expanded_state=self.treewidget.get_expanded_state(),
+            scrollbar_position=self.treewidget.get_scrollbar_position(),
+            visibility=self.isVisible()
+            )
+
     def update(self):
         self.treewidget.update_all()
 

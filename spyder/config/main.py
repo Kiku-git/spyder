@@ -68,8 +68,7 @@ RUN_CELL_AND_ADVANCE_SHORTCUT = 'Shift+Return'
 DEFAULTS = [
             ('main',
              {
-              'icon_theme': 'spyder 3',
-              'opengl': 'automatic',
+              'opengl': 'software',
               'single_instance': True,
               'open_files_port': OPEN_FILES_PORT,
               'tear_off_menus': False,
@@ -86,7 +85,7 @@ DEFAULTS = [
               'window/position': (10, 10),
               'window/is_maximized': True,
               'window/is_fullscreen': False,
-              'window/prefs_dialog_size': (745, 411),
+              'window/prefs_dialog_size': (1050, 530),
               'show_status_bar': True,
               'memory_usage/enable': True,
               'memory_usage/timeout': 2000,
@@ -98,15 +97,6 @@ DEFAULTS = [
               'show_internal_errors': True,
               'check_updates_on_startup': True,
               'toolbars_visible': True,
-              # Global Spyder fonts
-              'font/family': MONOSPACE,
-              'font/size': MEDIUM,
-              'font/italic': False,
-              'font/bold': False,
-              'rich_font/family': SANS_SERIF,
-              'rich_font/size': BIG,
-              'rich_font/italic': False,
-              'rich_font/bold': False,
               'cursor/width': 2,
               'completion/size': (300, 180),
               'report_error/remember_me': False,
@@ -187,7 +177,7 @@ DEFAULTS = [
              }),
             ('plots',
              {
-              'mute_inline_plotting': False,
+              'mute_inline_plotting': True,
               'show_plot_outline': False,
              }),
             ('editor',
@@ -237,7 +227,10 @@ DEFAULTS = [
               'max_recent_files': 20,
               'save_all_before_run': True,
               'focus_to_editor': True,
-              'onsave_analysis': False
+              'run_cell_copy': False,
+              'onsave_analysis': False,
+              'autosave_enabled': True,
+              'autosave_interval': 60,
               }),
             ('historylog',
              {
@@ -269,6 +262,7 @@ DEFAULTS = [
               'show_fullpath': False,
               'show_all_files': False,
               'group_cells': True,
+              'sort_files_alphabetically': False,
               'show_comments': True,
               }),
             ('project_explorer',
@@ -462,14 +456,33 @@ DEFAULTS = [
               'array_builder/enter array table': "Ctrl+M",
               # ---- In widgets/variableexplorer/aarayeditor.py ----
               'variable_explorer/copy': 'Ctrl+C',
+              # ---- In widgets/plots/figurebrowser.py ----
+              'plots/copy': 'Ctrl+C',
+              'plots/previous figure': 'Ctrl+PgUp',
+              'plots/next figure': 'Ctrl+PgDown',
+              # ---- In widgets/explorer ----
+              'explorer/copy file': 'Ctrl+C',
+              'explorer/paste file': 'Ctrl+V',
+              'explorer/copy absolute path': 'Ctrl+Alt+C',
+              'explorer/copy relative path': 'Ctrl+Alt+Shift+C',
               }),
-            ('color_schemes',
+            ('appearance',
              {
+              'icon_theme': 'spyder 3',
+              # Global Spyder fonts
+              'font/family': MONOSPACE,
+              'font/size': MEDIUM,
+              'font/italic': False,
+              'font/bold': False,
+              'rich_font/family': SANS_SERIF,
+              'rich_font/size': BIG,
+              'rich_font/italic': False,
+              'rich_font/bold': False,
               'ui_theme': 'automatic',
               'names': ['emacs', 'idle', 'monokai', 'pydev', 'scintilla',
                         'spyder', 'spyder/dark', 'zenburn', 'solarized/light',
                         'solarized/dark'],
-              'selected': 'spyder',
+              'selected': 'spyder/dark',
               # ---- Emacs ----
               'emacs/name':        "Emacs",
               #      Name            Color     Bold  Italic
@@ -587,22 +600,22 @@ DEFAULTS = [
               # ---- Spyder/Dark ----
               'spyder/dark/name':        "Spyder Dark",
               #           Name             Color     Bold  Italic
-              'spyder/dark/background':  "#131926",
-              'spyder/dark/currentline': "#2b2b43",
-              'spyder/dark/currentcell': "#31314e",
-              'spyder/dark/occurrence':   "#abab67",
-              'spyder/dark/ctrlclick':   "#0000ff",
-              'spyder/dark/sideareas':   "#282828",
-              'spyder/dark/matched_p':   "#009800",
-              'spyder/dark/unmatched_p': "#c80000",
+              'spyder/dark/background':  "#19232D",
+              'spyder/dark/currentline': "#3a424a",
+              'spyder/dark/currentcell': "#17172d",
+              'spyder/dark/occurrence':  "#509ea5",
+              'spyder/dark/ctrlclick':   "#179ae0",
+              'spyder/dark/sideareas':   "#222b35",
+              'spyder/dark/matched_p':   "#0bbe0b",
+              'spyder/dark/unmatched_p': "#ff4340",
               'spyder/dark/normal':     ('#ffffff', False, False),
-              'spyder/dark/keyword':    ('#558eff', False, False),
-              'spyder/dark/builtin':    ('#aa00aa', False, False),
-              'spyder/dark/definition': ('#ffffff', True, False),
-              'spyder/dark/comment':    ('#7f7f7f', False, False),
-              'spyder/dark/string':     ('#11a642', False, True),
-              'spyder/dark/number':     ('#c80000', False, False),
-              'spyder/dark/instance':   ('#be5f00', False, True),
+              'spyder/dark/keyword':    ('#c670e0', False, False),
+              'spyder/dark/builtin':    ('#fab16c', False, False),
+              'spyder/dark/definition': ('#57d6e4', True, False),
+              'spyder/dark/comment':    ('#999999', False, False),
+              'spyder/dark/string':     ('#b0e686', False, True),
+              'spyder/dark/number':     ('#faed5c', False, False),
+              'spyder/dark/instance':   ('#ee6772', False, True),
               # ---- Zenburn ----
               'zenburn/name':        "Zenburn",
               #        Name            Color     Bold  Italic
@@ -665,7 +678,7 @@ DEFAULTS = [
                 'python': {
                     'index': 0,
                     'cmd': 'pyls',
-                    'args': '--host %(host)s --port %(port)s --tcp',
+                    'args': '--host {host} --port {port} --tcp',
                     'host': '127.0.0.1',
                     'port': 2087,
                     'external': False,
@@ -749,7 +762,8 @@ DEFAULTS = [
 #    or if you want to *rename* options, then you need to do a MAJOR update in
 #    version, e.g. from 3.0.0 to 4.0.0
 # 3. You don't need to touch this value if you're just adding a new option
-CONF_VERSION = '46.1.0'
+CONF_VERSION = '47.6.0'
+
 
 # Main configuration instance
 try:

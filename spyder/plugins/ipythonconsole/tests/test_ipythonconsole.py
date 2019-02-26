@@ -18,6 +18,10 @@ import shutil
 import sys
 import tempfile
 from textwrap import dedent
+try:
+    from unittest.mock import Mock
+except ImportError:
+    from mock import Mock  # Python 2
 
 # Third party imports
 import cloudpickle
@@ -28,7 +32,7 @@ import pytest
 from qtpy import PYQT5
 from qtpy.QtCore import Qt
 from qtpy.QtWebEngineWidgets import WEBENGINE
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QMessageBox, QMainWindow
 import sympy
 
 # Local imports
@@ -47,7 +51,6 @@ from spyder.utils.programs import get_temp_dir
 SHELL_TIMEOUT = 20000
 TEMP_DIRECTORY = tempfile.gettempdir()
 NON_ASCII_DIR = osp.join(TEMP_DIRECTORY, u'測試', u'اختبار')
-ASCII_DIR = osp.join(TEMP_DIRECTORY, 'username')
 
 
 # =============================================================================
@@ -78,6 +81,14 @@ class FaultyKernelSpec(KernelSpec):
 @pytest.fixture
 def ipyconsole(qtbot, request):
     """IPython console fixture."""
+
+    class MainWindowMock(QMainWindow):
+        def __getattr__(self, attr):
+            if attr == 'consoles_menu_actions':
+                return []
+            else:
+                return Mock()
+
     # Tests assume inline backend
     CONF.set('ipython_console', 'pylab/backend', 0)
 
@@ -86,7 +97,7 @@ def ipyconsole(qtbot, request):
     if non_ascii_dir:
         test_dir = NON_ASCII_DIR
     else:
-        test_dir = ASCII_DIR
+        test_dir = None
 
     # Instruct the console to not use a stderr file
     no_stderr_file = request.node.get_marker('no_stderr_file')
@@ -113,13 +124,15 @@ def ipyconsole(qtbot, request):
     is_cython = True if cython_client else False
 
     # Create the console and a new client
-    console = IPythonConsole(parent=None,
-                             testing=True,
+    window = MainWindowMock()
+    console = IPythonConsole(parent=window,
                              test_dir=test_dir,
                              test_no_stderr=test_no_stderr)
+    console.dockwidget = Mock()
     console.create_new_client(is_pylab=is_pylab,
                               is_sympy=is_sympy,
                               is_cython=is_cython)
+    window.setCentralWidget(console)
 
     # Close callback
     def close_console():
@@ -127,8 +140,8 @@ def ipyconsole(qtbot, request):
         console.close()
     request.addfinalizer(close_console)
 
-    qtbot.addWidget(console)
-    console.show()
+    qtbot.addWidget(window)
+    window.show()
     return console
 
 
@@ -205,7 +218,7 @@ def test_sympy_client(ipyconsole, qtbot):
 
     # Assert there are no errors in the console
     control = ipyconsole.get_focus_widget()
-    assert 'Error' not in control.toPlainText()
+    assert 'NameError' not in control.toPlainText()
 
     # Reset the console namespace
     shell.reset_namespace(warning=False)
@@ -217,12 +230,13 @@ def test_sympy_client(ipyconsole, qtbot):
 
     # Assert there are no errors after restting the console
     control = ipyconsole.get_focus_widget()
-    assert 'Error' not in control.toPlainText()
+    assert 'NameError' not in control.toPlainText()
 
 
 @pytest.mark.slow
 @flaky(max_runs=3)
 @pytest.mark.cython_client
+@pytest.mark.skipif(os.name == 'nt', reason="It doesn't work on Windows")
 def test_cython_client(ipyconsole, qtbot):
     """Test that the Cython console is working correctly."""
     # Wait until the window is fully up
@@ -369,11 +383,14 @@ def test_non_ascii_stderr_file(ipyconsole, qtbot):
 
 @pytest.mark.slow
 @flaky(max_runs=3)
+@pytest.mark.skipif(PY2 and sys.platform == 'darwin',
+                    reason="It hangs frequently on Python 2.7 and macOS")
 def test_console_import_namespace(ipyconsole, qtbot):
     """Test an import of the form 'from foo import *'."""
     # Wait until the window is fully up
     shell = ipyconsole.get_current_shellwidget()
-    qtbot.waitUntil(lambda: shell._prompt_html is not None, timeout=SHELL_TIMEOUT)
+    qtbot.waitUntil(lambda: shell._prompt_html is not None,
+                    timeout=SHELL_TIMEOUT)
 
     # Import numpy
     with qtbot.waitSignal(shell.executed):
@@ -435,7 +452,7 @@ def test_console_coloring(ipyconsole, qtbot):
     console_font_color = get_console_font_color(syntax_style)
     console_background_color = get_console_background_color(style_sheet)
 
-    selected_color_scheme = CONF.get('color_schemes', 'selected')
+    selected_color_scheme = CONF.get('appearance', 'selected')
     color_scheme = get_color_scheme(selected_color_scheme)
     editor_background_color = color_scheme['background']
     editor_font_color = color_scheme['normal'][0]
@@ -639,7 +656,7 @@ def test_read_stderr(ipyconsole, qtbot):
 @pytest.mark.no_xvfb
 @pytest.mark.skipif(os.environ.get('CI', None) is not None and os.name == 'nt',
                     reason="It times out on AppVeyor.")
-@pytest.mark.timeout(timeout=20, method='thread')
+@pytest.mark.skipif(PY2, reason="It times out in Python 2.")
 def test_values_dbg(ipyconsole, qtbot):
     """
     Test that getting, setting, copying and removing values is working while
@@ -685,7 +702,9 @@ def test_values_dbg(ipyconsole, qtbot):
 
 @pytest.mark.slow
 @flaky(max_runs=10)
-@pytest.mark.skipif(os.name == 'nt', reason="It doesn't work on Windows")
+@pytest.mark.skipif(
+    os.environ.get('AZURE', None) is not None,
+    reason="It doesn't work on Windows and fails often on macOS")
 def test_plot_magic_dbg(ipyconsole, qtbot):
     """Test our plot magic while debugging"""
     shell = ipyconsole.get_current_shellwidget()

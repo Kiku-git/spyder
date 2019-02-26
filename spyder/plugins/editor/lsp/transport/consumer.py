@@ -27,7 +27,9 @@ if not os.name == 'nt':
 
 TIMEOUT = 5000
 PID = os.getpid()
-LOGGER = logging.getLogger(__name__)
+
+
+logger = logging.getLogger(__name__)
 
 
 class IncomingMessageThread(Thread):
@@ -51,12 +53,11 @@ class IncomingMessageThread(Thread):
         self.zmq_sock = zmq_sock
         self.req_status = req_status
 
-
     def read_posix(self):
         self.expect.expect('\r\n\r\n', timeout=None)
         headers = self.expect.before
         headers = self.parse_headers(headers)
-        LOGGER.debug(headers)
+        logger.debug(headers)
         content_length = int(headers[b'Content-Length'])
         body = self.expect.read(size=content_length)
         return self.encode_body(body, headers)
@@ -74,20 +75,21 @@ class IncomingMessageThread(Thread):
         continue_reading = True
         while continue_reading:
             try:
-                buffer += self.socket.recv(1024)
+                buffer += self.socket.recv(1)
                 if b'\r\n\r\n' in buffer:
                     split = buffer.split(b'\r\n\r\n')
                     if len(split) == 2:
                         headers, buffer = split
                         continue_reading = False
             except socket.error as e:
-                LOGGER.error(e)
+                logger.error(e)
                 raise e
         headers = self.parse_headers(headers)
-        LOGGER.debug(headers)
+        logger.debug(headers)
         content_length = int(headers[b'Content-Length'])
         pending_bytes = content_length - len(buffer)
         while pending_bytes > 0:
+            logger.debug('Pending bytes...' + str(pending_bytes))
             recv = self.socket.recv(min(1024, pending_bytes))
             buffer += recv
             pending_bytes -= len(recv)
@@ -97,7 +99,7 @@ class IncomingMessageThread(Thread):
         while True:
             with self.mutex:
                 if self.stopped:
-                    LOGGER.debug('Stopping Thread...')
+                    logger.debug('Stopping Thread...')
                     break
             try:
                 body = self.read_sock()
@@ -106,17 +108,17 @@ class IncomingMessageThread(Thread):
                     body = json.loads(body)
                 except (ValueError, TypeError) as e:
                     err = True
-                    LOGGER.error(e)
+                    logger.error(e)
                 if not err:
-                    LOGGER.debug(body)
+                    logger.debug(body)
                     self.zmq_sock.send_pyobj(body)
-                    LOGGER.debug('Message sent')
-            except socket.error:
-                pass
-        LOGGER.debug('Thread stopped.')
+                    logger.debug('Message sent')
+            except socket.error as e:
+                logger.error(e)
+        logger.debug('Thread stopped.')
 
     def parse_headers(self, headers):
-        LOGGER.debug(headers)
+        logger.debug(headers)
         headers = headers.split(b'\r\n')
         header_dict = dict([x.split(b': ') for x in headers])
         return header_dict

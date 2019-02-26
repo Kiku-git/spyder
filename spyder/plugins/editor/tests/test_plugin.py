@@ -1,38 +1,52 @@
 # -*- coding: utf-8 -*-
+# -----------------------------------------------------------------------------
+# Copyright (c) 2009- Spyder Project Contributors
 #
-# Copyright © Spyder Project Contributors
-# Licensed under the terms of the MIT License
-#
+# Distributed under the terms of the MIT License
+# (see spyder/__init__.py for details)
+# -----------------------------------------------------------------------------
+
 """Tests for the Editor plugin."""
 
 # Standard library imports
+import os
 import os.path as osp
 import shutil
+try:
+    from unittest.mock import MagicMock, Mock
+except ImportError:
+    from mock import MagicMock, Mock  # Python 2
 
 # Third party imports
 import pytest
-
-try:
-    from unittest.mock import Mock
-except ImportError:
-    from mock import Mock  # Python 2
-
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QMainWindow
 
 # Local imports
+from spyder.config.main import CONF
 from spyder.utils.qthelpers import qapplication
+app = qapplication()
+from spyder.plugins.editor.plugin import Editor
+from spyder.plugins.editor.utils.autosave import AutosaveForPlugin
 
 
-# ---- Qt Test Fixtures
+# =============================================================================
+# ---- Fixtures
+# =============================================================================
+@pytest.fixture
+def mock_RecoveryDialog(monkeypatch):
+    """Mock the RecoveryDialog in the editor plugin."""
+    mock = MagicMock()
+    monkeypatch.setattr('spyder.plugins.editor.utils.autosave.RecoveryDialog',
+                        mock)
+    return mock
+
+
 @pytest.fixture
 def setup_editor(qtbot, monkeypatch):
     """Set up the Editor plugin."""
-    qapplication()
-    from spyder.plugins.editor.plugin import Editor
-
     monkeypatch.setattr('spyder.plugins.editor.plugin.add_actions', Mock())
 
-    class MainMock(QWidget):
+    class MainMock(QMainWindow):
         def __getattr__(self, attr):
             if attr.endswith('actions'):
                 return []
@@ -46,11 +60,17 @@ def setup_editor(qtbot, monkeypatch):
         def get_spyder_pythonpath(*args):
             return []
 
-    editor = Editor(MainMock())
-    qtbot.addWidget(editor)
-    editor.show()
+    window = MainMock()
+    editor = Editor(window)
+    window.setCentralWidget(editor)
+    window.resize(640, 480)
+    qtbot.addWidget(window)
+    window.show()
 
-    yield editor, qtbot
+    yield editor
+    editor.close()
+
+    CONF.remove_option('editor', 'autosave_mapping')
 
 
 @pytest.fixture(scope="module")
@@ -69,9 +89,49 @@ def python_files(tmpdir_factory):
     return filenames, tmpdir
 
 
+@pytest.fixture
+def editor_open_files(request, setup_editor, python_files):
+    """
+    Setup an Editor with a set of open files, given a past file in focus.
+
+    If no/None ``last_focused_filename`` is passed, the ``"layout_settings"``
+    key is not included in the options dict.
+    If no/None ``expected_current_filename``, is assumed to be the first file.
+    """
+    def _get_editor_open_files(last_focused_filename,
+                               expected_current_filename):
+        editor = setup_editor
+        expected_filenames, tmpdir = python_files
+        if expected_current_filename is None:
+            expected_current_filename = expected_filenames[0]
+        expected_current_filename = osp.join(tmpdir, expected_current_filename)
+        options_dict = {
+            'filenames': expected_filenames,
+            'max_recent_files': 20,
+            }
+        if last_focused_filename is not None:
+            splitsettings = [(False,
+                              osp.join(tmpdir, last_focused_filename),
+                              [1] * len(expected_filenames))]
+            layout_dict = {'layout_settings': {'splitsettings': splitsettings}}
+            options_dict.update(layout_dict)
+
+        def get_option(option, default=None):
+            return options_dict.get(option)
+        editor.get_option = get_option
+
+        editor.setup_open_files()
+        return editor, expected_filenames, expected_current_filename
+
+    return _get_editor_open_files
+
+
+# =============================================================================
+# ---- Tests
+# =============================================================================
 def test_basic_initialization(setup_editor):
     """Test Editor plugin initialization."""
-    editor, qtbot = setup_editor
+    editor = setup_editor
 
     # Assert that editor exists
     assert editor is not None
@@ -84,34 +144,40 @@ def test_basic_initialization(setup_editor):
      ('file2.py', 'file2.py'),
      ('file4.py', 'file4.py')
      ])
-def test_setup_open_files(setup_editor, last_focused_filename,
-                          expected_current_filename, python_files):
+def test_setup_open_files(editor_open_files, last_focused_filename,
+                          expected_current_filename):
     """Test Editor plugin open files setup.
 
     Test that the file order is preserved during the Editor plugin setup and
     that the current file correspond to the last focused file.
     """
-    editor, qtbot = setup_editor
-    expected_filenames, tmpdir = python_files
-    expected_current_filename = osp.join(tmpdir, expected_current_filename)
+    editor_factory = editor_open_files
+    editor, expected_filenames, expected_current_filename = (
+        editor_factory(last_focused_filename, expected_current_filename))
 
-    def get_option(option, default=None):
-        splitsettings = [(False,
-                          osp.join(tmpdir, last_focused_filename),
-                          [1, 1, 1, 1])]
-        return {'layout_settings': {'splitsettings': splitsettings},
-                'filenames': expected_filenames,
-                'max_recent_files': 20
-                }.get(option)
-    editor.get_option = get_option
-
-    editor.setup_open_files()
     current_filename = editor.get_current_editorstack().get_current_filename()
     current_filename = osp.normcase(current_filename)
     assert current_filename == expected_current_filename
     filenames = editor.get_current_editorstack().get_filenames()
     filenames = [osp.normcase(f) for f in filenames]
     assert filenames == expected_filenames
+
+
+def test_setup_open_files_cleanprefs(editor_open_files):
+    """Test that Editor successfully opens files if layout is not defined.
+
+    Regression test for #8458 .
+    """
+    editor_factory = editor_open_files
+    editor, expected_filenames, expected_current_filename = (
+        editor_factory(None, None))
+
+    filenames = editor.get_current_editorstack().get_filenames()
+    filenames = [osp.normcase(f) for f in filenames]
+    assert filenames == expected_filenames
+    current_filename = editor.get_current_editorstack().get_current_filename()
+    current_filename = osp.normcase(current_filename)
+    assert current_filename == expected_current_filename
 
 
 def test_renamed_tree(setup_editor, mocker):
@@ -121,7 +187,7 @@ def test_renamed_tree(setup_editor, mocker):
     but does not test that all the renaming happens in File Explorer,
     Project Explorer, and Editor widget as those aren't part of the plugin.
     """
-    editor, qtbot = setup_editor
+    editor = setup_editor
     mocker.patch.object(editor, 'get_filenames')
     mocker.patch.object(editor, 'renamed')
     editor.get_filenames.return_value = ['/test/directory/file1.py',
@@ -143,7 +209,7 @@ def test_no_template(setup_editor):
     """
     Test that new files can be opened when no template is found.
     """
-    editor, qtbot = setup_editor
+    editor = setup_editor
 
     # Move template to another file to simulate the lack of it
     template = editor.TEMPLATE_PATH
@@ -163,6 +229,72 @@ def test_no_template(setup_editor):
     shutil.move(osp.join(osp.dirname(template), 'template.py.old'), template)
 
 
+def test_editor_has_autosave_component(setup_editor):
+    """Test that Editor includes an AutosaveForPlugin."""
+    editor = setup_editor
+    assert isinstance(editor.autosave, AutosaveForPlugin)
+
+
+def test_autosave_component_do_autosave(setup_editor, mocker):
+    """Test that AutosaveForPlugin's do_autosave() calls the current editor
+    stack's autosave_all()."""
+    editor = setup_editor
+    editorStack = editor.get_current_editorstack()
+    mocker.patch.object(editorStack.autosave, 'autosave_all')
+    editor.autosave.do_autosave()
+    assert editorStack.autosave.autosave_all.called
+
+
+def test_editor_transmits_sig_option_changed(setup_editor, qtbot):
+    editor = setup_editor
+    editorStack = editor.get_current_editorstack()
+    with qtbot.waitSignal(editor.sig_option_changed) as blocker:
+        editorStack.sig_option_changed.emit('autosave_mapping', {1: 2})
+    assert blocker.args == ['autosave_mapping', {1: 2}]
+
+
+def test_editor_sets_autosave_mapping_on_first_editorstack(setup_editor):
+    """Check that first editor stack gets autosave mapping from config."""
+    editor = setup_editor
+    editorStack = editor.get_current_editorstack()
+    assert editorStack.autosave_mapping == {}
+
+
+def test_editor_syncs_autosave_mapping_among_editorstacks(setup_editor, qtbot):
+    """Check that when an editorstack emits a sig_option_changed for
+    autosave_mapping, the autosave mapping of all other editorstacks is
+    updated."""
+    editor = setup_editor
+    editor.editorsplitter.split()
+    assert len(editor.editorstacks) == 2
+    old_mapping = {}
+    for editorstack in editor.editorstacks:
+        assert editorstack.autosave_mapping == old_mapping
+    new_mapping = {'ham': 'spam'}
+    editor.get_current_editorstack().sig_option_changed.emit(
+            'autosave_mapping', new_mapping)
+    for editorstack in editor.editorstacks:
+        if editorstack == editor.get_current_editorstack():
+            assert editorstack.autosave_mapping == old_mapping
+        else:
+            assert editorstack.autosave_mapping == new_mapping
+
+
+# The mock_RecoveryDialog fixture needs to be called before setup_editor, so
+# it needs to be mentioned first
+def test_editor_calls_recoverydialog_exec_if_nonempty(
+        mock_RecoveryDialog, setup_editor):
+    """Check that editor tries to exec a recovery dialog on construction."""
+    editor = setup_editor
+    assert mock_RecoveryDialog.return_value.exec_if_nonempty.called
+
+
+def test_closing_editor_plugin_stops_autosave_timer(setup_editor):
+    editor = setup_editor
+    assert editor.autosave.timer.isActive()
+    editor.closing_plugin()
+    assert not editor.autosave.timer.isActive()
+
+
 if __name__ == "__main__":
-    import os
     pytest.main(['-x', os.path.basename(__file__), '-vv', '-rw'])

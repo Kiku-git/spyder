@@ -17,7 +17,7 @@ from spyder.utils.qthelpers import qapplication
 from spyder.plugins.editor.widgets.codeeditor import CodeEditor
 from spyder.py3compat import to_binary_string
 from spyder.utils.codeanalysis import check_with_pyflakes, check_with_pep8
-from spyder.plugins.lspmanager import LSPManager
+from spyder.plugins.editor.lsp.manager import LSPManager
 from spyder.plugins.editor.lsp import LSPEventTypes
 from spyder.py3compat import PY2
 
@@ -57,7 +57,7 @@ def construct_editor(qtbot, *args, **kwargs):
     with qtbot.waitSignal(wrapper.sig_initialize, timeout=30000):
         editor.filename = 'test.py'
         editor.language = 'Python'
-        lsp_manager.start_lsp_client('python')
+        lsp_manager.start_client('python')
 
     text = ("def some_function():\n"  # D100, D103: Missing docstring
             "    \n"  # W293 trailing spaces
@@ -72,7 +72,7 @@ def construct_editor(qtbot, *args, **kwargs):
 
     yield editor, lsp_manager
     os.environ['SPY_TEST_USE_INTROSPECTION'] = 'False'
-    lsp_manager.closing_plugin()
+    lsp_manager.shutdown()
 
 
 @pytest.mark.skipif(os.name == 'nt' and os.environ.get('CI') is not None,

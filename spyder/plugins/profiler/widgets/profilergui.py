@@ -21,6 +21,7 @@ from itertools import islice
 import sys
 import time
 import re
+import logging
 
 # Third party imports
 from qtpy.compat import getopenfilename, getsavefilename
@@ -31,7 +32,7 @@ from qtpy.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMessageBox,
                             QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 # Local imports
-from spyder.config.base import get_conf_path, get_translation, debug_print
+from spyder.config.base import get_conf_path, get_translation
 from spyder.py3compat import to_text_string
 from spyder.utils import icon_manager as ima
 from spyder.utils.qthelpers import (create_toolbutton, get_item_user_text,
@@ -50,6 +51,7 @@ except KeyError as error:
 
 
 locale_codec = QTextCodec.codecForLocale()
+logger = logging.getLogger(__name__)
 
 
 def is_profiler_installed():
@@ -65,14 +67,17 @@ class ProfilerWidget(QWidget):
     VERSION = '0.0.1'
     redirect_stdio = Signal(bool)
     
-    def __init__(self, parent, max_entries=100, options_button=None):
+    def __init__(self, parent, max_entries=100, options_button=None,
+                 text_color=None):
         QWidget.__init__(self, parent)
         
         self.setWindowTitle("Profiler")
         
         self.output = None
         self.error_output = None
-        
+
+        self.text_color = text_color
+
         self._last_wdir = None
         self._last_args = None
         self._last_pythonpath = None
@@ -231,12 +236,12 @@ class ProfilerWidget(QWidget):
     def show_log(self):
         if self.output:
             TextEditor(self.output, title=_("Profiler output"),
-                       readonly=True, size=(700, 500)).exec_()
+                       readonly=True, size=(700, 500), parent=self).exec_()
     
     def show_errorlog(self):
         if self.error_output:
             TextEditor(self.error_output, title=_("Profiler output"),
-                       readonly=True, size=(700, 500)).exec_()
+                       readonly=True, size=(700, 500), parent=self).exec_()
 
     def start(self, wdir=None, args=None, pythonpath=None):
         filename = to_text_string(self.filecombo.currentText())
@@ -363,9 +368,10 @@ class ProfilerWidget(QWidget):
         self.datatree.load_data(self.DATAPATH)
         self.datatree.show_tree()
 
-        text_style = "<span style=\'color: #444444\'><b>%s </b></span>"
-        date_text = text_style % time.strftime("%Y-%m-%d %H:%M:%S",
-                                               time.localtime())
+        text_style = "<span style=\'color: %s\'><b>%s </b></span>"
+        date_text = text_style % (self.text_color,
+                                  time.strftime("%Y-%m-%d %H:%M:%S",
+                                                time.localtime()))
         self.datelabel.setText(date_text)
 
 
@@ -492,7 +498,7 @@ class ProfilerDataTree(QTreeWidget):
                 QMessageBox.critical(
                     self, _("Error"),
                     _("Error when trying to load profiler results"))
-                debug_print("Error when calling pstats, {}".format(e))
+                logger.debug("Error when calling pstats, {}".format(e))
                 self.compare_file = None
         map(lambda x: x.calc_callees(), stats_indi)
         self.profdata.calc_callees()

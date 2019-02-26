@@ -17,7 +17,8 @@ except ImportError:
     from mock import Mock, MagicMock  # Python 2
 
 # Third party imports
-from qtpy.QtWidgets import QWidget
+from qtpy import PYQT_VERSION
+from qtpy.QtWidgets import QMainWindow
 from qtpy.QtWebEngineWidgets import WEBENGINE
 import pytest
 from flaky import flaky
@@ -34,14 +35,16 @@ from spyder.utils.introspection.utils import default_info_response
 def help_plugin(qtbot):
     """Help plugin fixture"""
 
-    class MainMock(QWidget):
+    class MainMock(QMainWindow):
         def __getattr__(self, attr):
             if attr == 'ipyconsole' or attr == 'editor':
                 return None
             else:
                 return Mock()
 
-    help_plugin = Help(parent=MainMock())
+    window = MainMock()
+    help_plugin = Help(parent=window)
+    window.setCentralWidget(help_plugin)
 
     webview = help_plugin.rich_text.webview._webview
     if WEBENGINE:
@@ -49,7 +52,8 @@ def help_plugin(qtbot):
     else:
         help_plugin._webpage = webview.page().mainFrame()
 
-    qtbot.addWidget(help_plugin)
+    qtbot.addWidget(window)
+    window.show()
     return help_plugin
 
 
@@ -75,6 +79,7 @@ def check_text(widget, text):
 # Tests
 # =============================================================================
 @flaky(max_runs=3)
+@pytest.mark.skipif(PYQT_VERSION > '5.10', reason='Segfaults in PyQt 5.10+')
 def test_no_docs_message(help_plugin, qtbot):
     """
     Test that no docs message is shown when instrospection plugins
@@ -87,6 +92,7 @@ def test_no_docs_message(help_plugin, qtbot):
 
 
 @flaky(max_runs=3)
+@pytest.mark.skipif(PYQT_VERSION > '5.10', reason='Segfaults in PyQt 5.10+')
 def test_no_further_docs_message(help_plugin, qtbot):
     """
     Test that no further docs message is shown when instrospection
@@ -102,26 +108,20 @@ def test_no_further_docs_message(help_plugin, qtbot):
                     timeout=3000)
 
 
+@pytest.mark.skipif(PYQT_VERSION > '5.10', reason='Segfaults in PyQt 5.10+')
 def test_help_opens_when_show_tutorial_unit(help_plugin, qtbot):
     """Test fix for #6317 : 'Show tutorial' opens the help plugin if closed."""
     MockDockwidget = MagicMock()
     MockDockwidget.return_value.isVisible.return_value = False
     mockDockwidget_instance = MockDockwidget()
-
-    MockAction = Mock()
-    mock_toggle_view_action = MockAction()
     mock_show_rich_text = Mock()
 
     help_plugin.dockwidget = mockDockwidget_instance
-    help_plugin.toggle_view_action = mock_toggle_view_action
     help_plugin.show_rich_text = mock_show_rich_text
 
     help_plugin.show_tutorial()
     qtbot.wait(100)
 
-    assert mockDockwidget_instance.show.call_count == 1
-    assert mock_toggle_view_action.setChecked.call_count == 1
-    mock_toggle_view_action.setChecked.assert_called_once_with(True)
     assert mock_show_rich_text.call_count == 1
 
     MockDockwidget.return_value.isVisible.return_value = True
@@ -130,8 +130,6 @@ def test_help_opens_when_show_tutorial_unit(help_plugin, qtbot):
 
     help_plugin.show_tutorial()
     qtbot.wait(100)
-    assert mockDockwidget_instance.show.call_count == 1
-    assert mock_toggle_view_action.setChecked.call_count == 1
     assert mock_show_rich_text.call_count == 2
 
 

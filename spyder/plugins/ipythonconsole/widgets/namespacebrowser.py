@@ -9,7 +9,12 @@ Widget that handle communications between the IPython Console and
 the Variable Explorer
 """
 
+import logging
 import time
+try:
+    time.monotonic  # time.monotonic new in 3.3
+except AttributeError:
+    time.monotonic = time.time
 
 from qtpy.QtCore import QEventLoop
 from qtpy.QtWidgets import QMessageBox
@@ -17,14 +22,11 @@ from qtpy.QtWidgets import QMessageBox
 import cloudpickle
 from qtconsole.rich_jupyter_widget import RichJupyterWidget
 
-from spyder.config.base import _, debug_print
+from spyder.config.base import _
 from spyder.py3compat import PY2, to_text_string
 
 
-try:
-    time.monotonic  # time.monotonic new in 3.3
-except AttributeError:
-    time.monotonic = time.time
+logger = logging.getLogger(__name__)
 
 
 class NamepaceBrowserWidget(RichJupyterWidget):
@@ -70,9 +72,12 @@ class NamepaceBrowserWidget(RichJupyterWidget):
 
     def set_namespace_view_settings(self):
         """Set the namespace view settings"""
-        settings = to_text_string(self.namespacebrowser.get_view_settings())
-        code = u"get_ipython().kernel.namespace_view_settings = %s" % settings
-        self.silent_execute(code)
+        if self.namespacebrowser:
+            settings = to_text_string(
+                self.namespacebrowser.get_view_settings())
+            code =(u"get_ipython().kernel.namespace_view_settings = %s" %
+                   settings)
+            self.silent_execute(code)
 
     def get_value(self, name):
         """Ask kernel for a value"""
@@ -198,7 +203,7 @@ class NamepaceBrowserWidget(RichJupyterWidget):
         elif spyder_msg_type == 'set_breakpoints':
             self.set_spyder_breakpoints(force=True)
         else:
-            debug_print("No such spyder message type: %s" % spyder_msg_type)
+            logger.debug("No such spyder message type: %s" % spyder_msg_type)
 
     # ---- Private API (overrode by us) ----------------------------
     def _handle_execute_reply(self, msg):
